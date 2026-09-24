@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Jess (quin345) - Data Mining Portfolio: cTrader Tick + L2 Depth on Fabric</title>
+<meta name="description" content="Real-time cTrader tick and Level II depth on Microsoft Fabric. 120 symbols, Eventstream, KQL, Cosmos DB, Lakehouse medallion, 15-min order-book features.">
+<link rel="stylesheet" href="assets/styles.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+<header class="nav"><div class="wrap nav-in">
+<a class="brand" href="#top">Jess <span>quin345</span></a>
+<nav><a href="#architecture">Architecture</a><a href="#pipelines">Pipelines</a><a href="#mining">Mining</a><a href="#features">Features</a><a href="#results">Results</a><a href="#roadmap">Roadmap</a></nav>
+<a class="btn sm" href="https://github.com/quin345" target="_blank" rel="noopener">GitHub</a>
+</div></header>
+<main id="top">
+<section class="hero"><div class="wrap hero-grid">
+<div>
+<p class="kicker">Data Engineering - Market Microstructure - ML on Microsoft Fabric</p>
+<h1>cTrader Tick Data Platform <em>on Microsoft Fabric</em></h1>
+<p class="lede">Private data-mining project (Axiom Analytics). Real-time <strong>spot ticks + Level II depth</strong> from cTrader Open API into <strong>Fabric Eventstream, Eventhouse KQL + Cosmos DB bronze, Lakehouse medallion</strong> - built for cheap, unlimited exploration of a ~120-symbol FX/metals/crypto/indices universe.</p>
+<div class="cta"><a class="btn" href="#results">See mined results</a><a class="btn ghost" href="#architecture">How it is built</a></div>
+<div class="stats">
+<div class="stat"><b>~120</b><span>symbols mined</span></div>
+<div class="stat"><b>2</b><span>streams: ticks + L2</span></div>
+<div class="stat"><b>26</b><span>days live window</span></div>
+<div class="stat"><b>4.0M</b><span>ticks top symbol</span></div>
+<div class="stat"><b>22+1</b><span>features + label</span></div>
+</div>
+<p class="fine">Existing site: <a href="https://quin345.github.io">quin345.github.io</a> (Jekyll stub) - this portfolio is designed as its replacement.</p>
+</div>
+<div class="card pipe-card">
+<h3>Live data flow</h3>
+<pre class="ascii">cTrader Open API (live)
+ |- spot ticks {ts,Symbol,Bid,Ask}
+ |   -&gt; Event Hub -&gt; Eventstream
+ |   -&gt; Eventhouse KQL tick_data3
+ |- L2 depth ProtoOADepthEvent
+     -&gt; CosmosDB ctrader/market_depth
+     -&gt; silver book -&gt; gold features</pre>
+<ul class="ticks">
+<li>Tick collector w/ auto-reconnect (Key Vault)</li>
+<li>Depth collector, all symbols, chunked</li>
+<li>Imbalance / spread / VWAP metrics</li>
+<li>EDA: liquidity, spread-by-session, vol-by-hour</li>
+</ul>
+</div>
+</div></section>
+<section id="architecture" class="sec"><div class="wrap">
+<h2>Architecture</h2>
+<p class="sub">Two engines: KQL for hot streaming, Lakehouse Delta/Parquet for cold history and ML.</p>
+<div class="grid3">
+<div class="card"><h3>Hot - KQL DB ctrader</h3><p>Eventstream lands natively. Table <code>tick_data3</code>, views <code>ticks_1m</code> + spread view. Real-time dashboard. Hot cache trimmable to ~90d once silver is trusted.</p></div>
+<div class="card"><h3>Cold - Lakehouse</h3><p>Bronze Parquet (backfill ticks/bars, depth events, snapshots) to Silver Delta (deduped ticks, M1 bars, book, metadata) to Gold (1m features, regimes, corr, events).</p></div>
+<div class="card"><h3>Bronze L2 - Cosmos DB</h3><p><code>ctrader/market_depth</code> partitioned by /symbolId, Entra-ID auth. One raw JSON doc per depth event. Raw + snapshots both kept.</p></div>
+</div>
+</div></section>
+<section id="pipelines" class="sec alt"><div class="wrap">
+<h2>Collectors and pipelines</h2>
+<div class="grid2">
+<div class="card"><h3>tick_data/get_tickdata.py</h3><p>Subscribes spot for every symbol, pushes minimal {timestamp, Symbol, Bid, Ask} JSON to Event Hub. Auto-reconnect. Key Vault - env - CLI flag precedence.</p></div>
+<div class="card"><h3>depth_data/get_domdata.py</h3><p>Subscribes depth for all symbols (chunked, per-chunk errors), one raw doc per ProtoOADepthEvent to Cosmos DB. Variant get_domdata_eventhub.py fronts planned depth Eventstream.</p></div>
+<div class="card"><h3>Scala silver job</h3><p>scala_job/silver_marketdepth_quotes reconstructs L2 snapshots to silver. sjd1 vendors protobuf client so the Spark Job Definition runs standalone.</p></div>
+<div class="card"><h3>Metadata SJD</h3><p>fetch_asset_metadata pulls assets, classes, swaps, commissions, volume rules to lakehouse JSON, snapshotted weekly for point-in-time correctness.</p></div>
+</div>
+</div></section>
+<section id="mining" class="sec"><div class="wrap">
+<h2>Mining plan <span class="pill">mining first, dashboards second</span></h2>
+<div class="grid2">
+<div class="card"><h3>Handling rules</h3><ol><li>Raw backfill to Lakehouse bronze, never KQL.</li><li>Silver/gold always Delta, partitioned symbol/date.</li><li>KQL is serving layer only.</li><li>Keep raw depth events and snapshots.</li><li>Version metadata weekly.</li></ol></div>
+<div class="card"><h3>Workstreams W1-W5</h3><ul><li><b>W1</b> Microstructure to gold_features_1m</li><li><b>W2</b> Volatility/regimes to gold_regimes</li><li><b>W3</b> Correlation/clustering to gold_corr</li><li><b>W4</b> Shock detection to gold_events</li><li><b>W5</b> Prediction baselines (90+ days)</li></ul></div>
+</div>
+</div></section>
+<section id="features" class="sec alt"><div class="wrap">
+<h2>15-minute order-book features</h2>
+<p class="sub">One row per (symbol, 15-min bar), 22 features + 1 forward label. Features describe bar k-1, label looks one bar ahead.</p>
+<div class="grid3">
+<div class="card"><h3>Price and vol</h3><p>mid_pct_chg, range_rel, rv_1bar, mid_change_ratio, uptick_ratio.</p></div>
+<div class="card"><h3>Spread and book</h3><p>rel_spread_mean/max, imbalance_ratio_mean, vwap_to_spread_ratio. No raw levels - stackable across assets.</p></div>
+<div class="card"><h3>Activity and time</h3><p>tick_activity_chg, hour_sin/cos, day_of_week, session. Label y_mid_pct_chg_1bar_fwd.</p></div>
+</div>
+</div></section>
+<section id="results" class="sec"><div class="wrap">
+<h2>Mined results</h2>
+<p class="sub">Charts render live from assets/data.json - sanitized aggregates only.</p>
+<div class="grid2">
+<div class="card"><h3>Liquidity score - top 12</h3><canvas id="chLiq" height="260"></canvas><div class="tbl-wrap"><table id="tblLiq"><thead><tr><th>Symbol</th><th>Spread</th><th>Rate</th><th>Score</th></tr></thead><tbody></tbody></table></div></div>
+<div class="card"><h3>Coverage - ticks per symbol</h3><canvas id="chCov" height="260"></canvas><div class="tbl-wrap"><table id="tblCov"><thead><tr><th>Symbol</th><th>Ticks</th><th>Days</th></tr></thead><tbody></tbody></table></div></div>
+</div>
+<div class="card"><h3>Session sample (BTCUSD)</h3><p>Sydney avg 6.79e-05 (p95 7.70e-05) vs London avg 7.53e-05 (p95 9.65e-05). Full breakdown in spread_by_session.csv; hourly surface in volatility_by_hour.csv.</p></div>
+</div></section>
+<section id="notebooks" class="sec alt"><div class="wrap">
+<h2>Fabric items and notebooks</h2>
+<div class="grid3">
+<div class="card"><h3>EDA</h3><p>eda_tickdata_icmarkets (PySpark), eda_marketdepth_icmarkets (Scala), NewRTDashboard_1 KQL dashboard.</p></div>
+<div class="card"><h3>Gold build</h3><p>dom_data_sql_togold - DOM to gold metric tables per session, deduped on tick content.</p></div>
+<div class="card"><h3>Modelling</h3><p>15m_feat_k-1 notebook + MLExperiment + MLModel, prediction_nb baselines.</p></div>
+</div>
+</div></section>
+<section id="roadmap" class="sec"><div class="wrap">
+<h2>Roadmap</h2>
+<div class="grid2"><div class="card"><h3>Done</h3><ul><li>Tick Eventstream integration test</li><li>SJD automated deploy</li><li>L2 discovery on majors</li><li>Live L2 to Cosmos bronze</li><li>Depth metrics + summary</li></ul></div>
+<div class="card"><h3>Next</h3><ul><li>Metadata pipeline to Lakehouse</li><li>Depth Eventstream to KQL</li><li>Silver/gold medallion</li><li>Historical backfill (ticks + M1)</li><li>Depth features iteration</li></ul></div></div>
+</div></section>
+<section class="sec contact"><div class="wrap card contact-card">
+<h2>Jess - Full-stack data professional</h2>
+<p>Data Engineer - Data Scientist - AI/ML Research Engineer - Butuan (UTC+08:00)</p>
+<p><a class="btn sm" href="https://github.com/quin345">github.com/quin345</a> <a class="btn sm ghost" href="https://quin345.github.io">quin345.github.io</a></p>
+<p class="fine">Private project Axiom Analytics Holdings Inc. - architecture and aggregates only. Educational showcase, not financial advice.</p>
+</div></section>
+</main>
+<footer><div class="wrap">Built from private data-mining-project aggregates - static HTML/CSS/JS + Chart.js</div></footer>
+<script src="assets/app.js"></script>
+</body></html>
